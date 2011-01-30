@@ -2,7 +2,7 @@
  * libtilemcore - Graphing calculator emulation library
  *
  * Copyright (C) 2001 Solignac Julien
- * Copyright (C) 2004-2009 Benjamin Moody
+ * Copyright (C) 2004-2011 Benjamin Moody
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public License
@@ -276,17 +276,16 @@ byte x4_z80_in(TilemCalc* calc, dword port)
 		curtime += calc->hwregs[CLOCK_DIFF];
 		return (curtime >> ((port - 0x45) * 8));
 
+#ifdef DISABLE_USB
+
+	/* Minimal set of port values - the calculator should
+	   recognize that nothing is connected to the USB port (thanks
+	   to Dan Englender for these values) */
+
 	case 0x4C:
 		return(0x22);
 
 	case 0x4D:
-		/* USB port - not emulated, calculator should
-		   recognize that the USB cable is
-		   disconnected.
-
-		   Thanks go to Dan Englender for these
-		   values. */
-
 		return(0xA5);
 
 	case 0x55:
@@ -297,6 +296,131 @@ byte x4_z80_in(TilemCalc* calc, dword port)
 
 	case 0x57:
 		return(0x50);
+
+#else /* ! DISABLE_USB */
+
+	case 0x3A:
+		return(0);
+
+	case 0x4C:
+	case 0x6C:
+		return(tilem_usbctl_get_port4c(calc));
+
+	case 0x4D:
+	case 0x6D:
+		return(calc->usbctl.linestatus);
+
+	case 0x54:
+	case 0x74:
+		return(tilem_usbctl_get_port54(calc));
+
+	case 0x55:
+	case 0x75:
+		v = 0x1F;
+		if (calc->z80.interrupts & TILEM_INTERRUPT_USB_PROTOCOL)
+			v &= ~0x10;
+		if (calc->z80.interrupts & TILEM_INTERRUPT_USB_LINE)
+			v &= ~0x04;
+		return(v);
+
+	case 0x56:
+	case 0x76:
+		return(calc->usbctl.lineevents);
+
+ 	case 0x57:
+	case 0x77:
+		return(calc->usbctl.lineeventmask);
+
+	case 0x5A:
+	case 0x7A:
+		return(calc->usbctl.lcdmirror);
+
+	case 0x5B:
+	case 0x7B:
+		return(calc->usbctl.protocolint);
+
+	case 0x80:
+		return(calc->usbctl.address);
+
+	case 0x81:
+		return(tilem_usbctl_get_port81(calc));
+
+	case 0x82:
+		return(tilem_usbctl_get_w_events(calc, 0));
+	case 0x83:
+		return(tilem_usbctl_get_w_events(calc, 8));
+	case 0x84:
+		return(tilem_usbctl_get_r_events(calc, 0));
+	case 0x85:
+		return(tilem_usbctl_get_r_events(calc, 8));
+	case 0x86:
+		return(tilem_usbctl_get_b_events(calc));
+
+	case 0x87:
+		return(calc->usbctl.weventmask & 0xff);
+	case 0x88:
+		return(calc->usbctl.weventmask >> 8);
+	case 0x89:
+		return(calc->usbctl.reventmask & 0xff);
+	case 0x8A:
+		return(calc->usbctl.reventmask >> 8);
+	case 0x8B:
+		return(calc->usbctl.beventmask);
+
+	case 0x8C:
+		return(calc->usbctl.counter & 0xff);
+	case 0x8D:
+		return((calc->usbctl.counter >> 8) & 0x07);
+
+	case 0x8E:
+		return(calc->usbctl.curpipe);
+
+	case 0x8F:
+		return(tilem_usbctl_get_port8f(calc));
+
+	case 0x90:
+		return(calc->usbctl.wpipes[calc->usbctl.curpipe].maxsize >> 3);
+	case 0x91:
+		return(tilem_usbctl_get_w_state(calc));
+
+	case 0x93:
+		return(calc->usbctl.rpipes[calc->usbctl.curpipe].maxsize >> 3);
+	case 0x94:
+		return(tilem_usbctl_get_r_state(calc));
+
+	case 0x96:
+		return(calc->usbctl.rpipes[calc->usbctl.curpipe].count & 0xff);
+	case 0x97:
+		return(calc->usbctl.rpipes[calc->usbctl.curpipe].count >> 8);
+
+	case 0x98:
+		return(calc->usbctl.wpipes[calc->usbctl.curpipe].mode);
+	case 0x99:
+		return(calc->usbctl.wpipes[calc->usbctl.curpipe].interval);
+	case 0x9A:
+		return(calc->usbctl.rpipes[calc->usbctl.curpipe].mode);
+	case 0x9B:
+		return(calc->usbctl.rpipes[calc->usbctl.curpipe].interval);
+
+	case 0xA0:
+	case 0xA1:
+	case 0xA2:
+	case 0xA3:
+	case 0xA4:
+	case 0xA5:
+	case 0xA6:
+	case 0xA7:
+	case 0xA8:
+	case 0xA9:
+	case 0xAA:
+	case 0xAB:
+	case 0xAC:
+	case 0xAD:
+	case 0xAE:
+	case 0xAF:
+		return(tilem_usbctl_read_pipe(calc, (port & 0x0f)));
+		
+#endif /* ! DISABLE_USB */
 
 	case 0x0B:
 	case 0x0C:
@@ -371,6 +495,9 @@ void x4_z80_out(TilemCalc* calc, dword port, byte value)
 	int t, r;
 	unsigned int mode;
 	time_t curtime;
+#ifndef DISABLE_USB
+	word pipes;
+#endif
 
 	switch(port&0xff) {
 	case 0x00:
@@ -723,6 +850,116 @@ void x4_z80_out(TilemCalc* calc, dword port, byte value)
 		calc->hwregs[CLOCK_INPUT] &= 0x00ffffff;
 		calc->hwregs[CLOCK_INPUT] |= (value << 24);
 		break;
+
+#ifndef DISABLE_USB
+
+	case 0x4C:
+		tilem_usbctl_set_port4c(calc, value);
+		break;
+
+	case 0x54:
+		tilem_usbctl_set_port54(calc, value);
+		break;
+
+	case 0x57:
+		tilem_usbctl_set_line_event_mask(calc, value);
+		break;
+
+	case 0x5A:
+		tilem_usbctl_set_lcd_mirror(calc, value & 1);
+		break;
+
+	case 0x5B:
+		if (!(value & 1)) {
+			calc->z80.interrupts &= ~TILEM_INTERRUPT_USB_PROTOCOL;
+		}
+		calc->usbctl.protocolint = value & 1;
+		break;
+
+	case 0x80:
+		tilem_usbctl_set_address(calc, value);
+		break;
+
+	case 0x81:
+		tilem_usbctl_set_port81(calc, value);
+		break;
+
+	case 0x87:
+		pipes = (calc->usbctl.weventmask & 0xff00) | value;
+		tilem_usbctl_set_w_event_mask(calc, pipes);
+		break;
+	case 0x88:
+		pipes = (calc->usbctl.weventmask & 0xff) | (value << 8);
+		tilem_usbctl_set_w_event_mask(calc, pipes);
+		break;
+	case 0x89:
+		pipes = (calc->usbctl.reventmask & 0xff00) | value;
+		tilem_usbctl_set_r_event_mask(calc, pipes);
+		break;
+	case 0x8A:
+		pipes = (calc->usbctl.reventmask & 0xff) | (value << 8);
+		tilem_usbctl_set_r_event_mask(calc, pipes);
+		break;
+	case 0x8B:
+		tilem_usbctl_set_b_event_mask(calc, value);
+		break;
+
+	case 0x8E:
+		tilem_usbctl_select_pipe(calc, value);
+		break;
+
+	case 0x8F:
+		tilem_usbctl_set_port8f(calc, value);
+		break;
+
+	case 0x90:
+		tilem_usbctl_set_w_max_size(calc, value << 3);
+		break;
+	case 0x91:
+		tilem_usbctl_set_w_state(calc, value);
+		break;
+
+	case 0x93:
+		tilem_usbctl_set_r_max_size(calc, value << 3);
+		break;
+	case 0x94:
+		tilem_usbctl_set_r_state(calc, value);
+		break;
+
+	case 0x98:
+		tilem_usbctl_set_w_mode(calc, value);
+		break;
+	case 0x99:
+		tilem_usbctl_set_w_interval(calc, value);
+		break;
+	case 0x9A:
+		tilem_usbctl_set_r_mode(calc, value);
+		break;
+	case 0x9B:
+		tilem_usbctl_set_r_interval(calc, value);
+		break;
+
+	case 0xA0:
+	case 0xA1:
+	case 0xA2:
+	case 0xA3:
+	case 0xA4:
+	case 0xA5:
+	case 0xA6:
+	case 0xA7:
+	case 0xA8:
+	case 0xA9:
+	case 0xAA:
+	case 0xAB:
+	case 0xAC:
+	case 0xAD:
+	case 0xAE:
+	case 0xAF:
+		tilem_usbctl_write_pipe(calc, (port & 0x0f), value);
+		break;
+
+#endif	/* !DISABLE_USB */
+
 	}
 
 	return;
