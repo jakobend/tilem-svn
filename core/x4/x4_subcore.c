@@ -2,7 +2,7 @@
  * libtilemcore - Graphing calculator emulation library
  *
  * Copyright (C) 2001 Solignac Julien
- * Copyright (C) 2004-2009 Benjamin Moody
+ * Copyright (C) 2004-2011 Benjamin Moody
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public License
@@ -52,7 +52,7 @@ TilemHardware hardware_ti84p = {
 	'4', "ti84p", "TI-84 Plus",
 	(TILEM_CALC_HAS_LINK | TILEM_CALC_HAS_LINK_ASSIST
 	 | TILEM_CALC_HAS_T6A04 | TILEM_CALC_HAS_FLASH
-	 | TILEM_CALC_HAS_MD5_ASSIST),
+	 | TILEM_CALC_HAS_MD5_ASSIST | TILEM_CALC_HAS_USB),
 	96, 64, 64 * 0x4000, 8 * 0x4000, 16 * 64, 0x80,
 	NUM_FLASH_SECTORS, flashsectors, 3,
 	NUM_HW_REGS, hwregnames,

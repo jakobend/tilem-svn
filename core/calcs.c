@@ -1,7 +1,7 @@
 /*
  * libtilemcore - Graphing calculator emulation library
  *
- * Copyright (C) 2009 Benjamin Moody
+ * Copyright (C) 2009-2011 Benjamin Moody
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public License
@@ -65,6 +65,7 @@ void tilem_calc_reset(TilemCalc* calc)
 	tilem_flash_reset(calc);
 	tilem_md5_assist_reset(calc);
 	tilem_user_timers_reset(calc);
+	tilem_usbctl_reset(calc);
 	if (calc->hw.reset)
 		(*calc->hw.reset)(calc);
 }
@@ -84,6 +85,10 @@ TilemCalc* tilem_calc_new(char id)
 
 			calc->hw = *hwmodels[i];
 
+#ifdef DISABLE_USB
+			calc->hw.flags &= ~TILEM_CALC_HAS_USB;
+#endif
+
 			calc->poweronhalt = 1;
 			calc->battery = 60;
 			calc->hwregs = tilem_try_new_atomic(dword, calc->hw.nhwregs);
@@ -97,6 +102,9 @@ TilemCalc* tilem_calc_new(char id)
 			msize = (calc->hw.romsize + calc->hw.ramsize
 				 + calc->hw.lcdmemsize);
 
+			if (calc->hw.flags & TILEM_CALC_HAS_USB)
+				msize += TILEM_USB_MEM_SIZE;
+
 			calc->mem = tilem_try_new_atomic(byte, msize);
 			if (!calc->mem) {
 				tilem_free(calc->hwregs);
@@ -106,6 +114,7 @@ TilemCalc* tilem_calc_new(char id)
 
 			calc->ram = calc->mem + calc->hw.romsize;
 			calc->lcdmem = calc->ram + calc->hw.ramsize;
+			calc->usbmem = calc->lcdmem + calc->hw.lcdmemsize;
 
 			memset(calc->ram, 0, msize - calc->hw.romsize);
 
@@ -160,6 +169,9 @@ TilemCalc* tilem_calc_copy(TilemCalc* calc)
 	       newcalc->z80.nbreakpoints * sizeof(TilemZ80Breakpoint));
 
 	msize = (calc->hw.romsize + calc->hw.ramsize + calc->hw.lcdmemsize);
+	if (calc->hw.flags & TILEM_CALC_HAS_USB)
+		msize += TILEM_USB_MEM_SIZE;
+
 	newcalc->mem = tilem_try_new_atomic(byte, msize);
 	if (!newcalc->mem) {
 		tilem_free(newcalc->z80.breakpoints);
@@ -172,6 +184,7 @@ TilemCalc* tilem_calc_copy(TilemCalc* calc)
 
 	newcalc->ram = newcalc->mem + calc->hw.romsize;
 	newcalc->lcdmem = newcalc->ram + calc->hw.ramsize;
+	newcalc->usbmem = newcalc->lcdmem + calc->hw.lcdmemsize;
 
 	return newcalc;
 }

@@ -1,7 +1,7 @@
 /*
  * libtilemcore - Graphing calculator emulation library
  *
- * Copyright (C) 2009 Benjamin Moody
+ * Copyright (C) 2009-2011 Benjamin Moody
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public License
@@ -312,6 +312,8 @@ void tilem_z80_reset(TilemCalc* calc)
 			= tilem_flash_delay_timer;
 		calc->z80.timers[TILEM_TIMER_LINK_ASSIST].callback
 			= tilem_linkport_assist_timer;
+		calc->z80.timers[TILEM_TIMER_USB_FRAME].callback
+			= tilem_usb_frame_timer;
 
 		for (i = 0; i < TILEM_MAX_USER_TIMERS; i++) {
 			calc->z80.timers[TILEM_TIMER_USER1 + i].callback

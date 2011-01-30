@@ -1,7 +1,7 @@
 /*
  * libtilemcore - Graphing calculator emulation library
  *
- * Copyright (C) 2009 Benjamin Moody
+ * Copyright (C) 2009-2011 Benjamin Moody
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public License
@@ -187,6 +187,8 @@ enum {
 	TILEM_INTERRUPT_LINK_READ = 1024,  /* Link assist read a byte */
 	TILEM_INTERRUPT_LINK_IDLE = 2048,  /* Link assist is idle */
 	TILEM_INTERRUPT_LINK_ERROR = 4096, /* Link assist failed */
+	TILEM_INTERRUPT_USB_LINE = 8192,   /* USB line event */
+	TILEM_INTERRUPT_USB_PROTOCOL = 16384 /* USB protocol event */
 };
 
 /* Constant hardware timer IDs */
@@ -198,6 +200,7 @@ enum {
 	TILEM_TIMER_USER1,
 	TILEM_TIMER_USER2,
 	TILEM_TIMER_USER3,
+	TILEM_TIMER_USB_FRAME,
 	TILEM_TIMER_HW
 };
 
@@ -675,6 +678,277 @@ byte tilem_user_timer_get_value(TilemCalc* calc, int n);
 void tilem_user_timer_expired(TilemCalc* calc, void* data);
 
 
+/* USB */
+
+/* Port state flags */
+enum {
+	TILEM_USB_STATE_VBUS = 1, /* Vbus powered */
+	TILEM_USB_STATE_DP   = 2, /* D+ pull-up (if VBUS or SRP flag set) */
+	TILEM_USB_STATE_DM   = 4, /* D- pull-up (if VBUS or SRP flag set) */
+	TILEM_USB_STATE_SE0  = 8, /* D+/D- pull-down (port reset) */
+	TILEM_USB_STATE_SRP  = 16, /* Force D+/D- pull-up (SRP) */
+	TILEM_USB_STATE_HOST = 32  /* Device acting as host */
+};
+
+/* Line state/event flags (ports 4D, 56, 57) */
+enum {
+	TILEM_USB_LINE_DP_LOW    = 0x01, /* D+ low */
+	TILEM_USB_LINE_DP_HIGH   = 0x02, /* D+ high */
+	TILEM_USB_LINE_DM_LOW    = 0x04, /* D- low */
+	TILEM_USB_LINE_DM_HIGH   = 0x08, /* D- high */
+	TILEM_USB_LINE_ID_LOW    = 0x10, /* ID low */
+	TILEM_USB_LINE_ID_HIGH   = 0x20, /* ID high */
+	TILEM_USB_LINE_VBUS_HIGH = 0x40, /* Vbus high */
+	TILEM_USB_LINE_VBUS_LOW  = 0x80	 /* Vbus low */
+};
+
+/* Protocol events (port 86) */
+enum {
+	TILEM_USB_EVENT_RESET = 0x04
+};
+
+/* Endpoint transfer types */
+enum {
+	TILEM_USB_EP_CONTROL = 0,
+	TILEM_USB_EP_ISOCHRONOUS = 1,
+	TILEM_USB_EP_BULK = 2,
+	TILEM_USB_EP_INTERRUPT = 3
+};
+
+/* Callback status values */
+enum {
+	TILEM_USB_TIMEOUT = -3,	/* no response */
+	TILEM_USB_STALL = -2,	/* error */
+	TILEM_USB_NAK = -1,	/* device is busy */
+	TILEM_USB_ACK = 0	/* acknowledge output */
+};
+
+/* Low-level interface for external USB devices */
+
+typedef struct _TilemUSBDevice TilemUSBDevice;
+
+struct _TilemUSBDevice {
+	TilemCalc* calc;
+	void* user_data;
+
+	byte is_a_cable;	/* 1 if device has a mini-A cable */
+
+	unsigned int state;	/* Device state */
+
+	/* General callbacks */
+
+	/* Initialize device after attaching to calc */
+	int (*attach)(TilemUSBDevice* dev);
+
+	/* Deinitialize device before detaching from calc */
+	void (*detach)(TilemUSBDevice* dev);
+
+	/* Calculator electrical state changed */
+	void (*state_changed)(TilemUSBDevice* dev, unsigned int calcstate);
+
+	/* Start of (virtual) USB frame */
+	void (*begin_frame)(TilemUSBDevice* dev);
+
+	/* Endpoint configuration changed */
+	void (*endpoints_changed)(TilemUSBDevice* dev);
+
+	/* Calc-as-host (this-device-as-peripheral) callbacks */
+
+	/* Calculator sends setup packet (timestamp can be used to
+	   check whether the contents have changed since the last time
+	   this function was called) */
+	int (*h_send_setup)(TilemUSBDevice* dev, byte addr, byte ep,
+	                    int length, const byte* data, dword timestamp);
+
+	/* Calculator sends data packet */
+	int (*h_send_out)(TilemUSBDevice* dev, byte addr, byte ep,
+	                  int length, const byte* data, int parity,
+	                  dword timestamp);
+
+	/* Calculator requests data from endpoint */
+	int (*h_request_in)(TilemUSBDevice* dev, byte addr, byte ep,
+	                    int bufsize, byte* buffer, int parity);
+
+	/* Calc-as-peripheral (this-device-as-host) callbacks */
+
+	/* Calculator is ready to send data */
+	void (*p_queue_data)(TilemUSBDevice* dev, byte ep,
+	                     int length, const byte* data);
+
+	/* Calculator sets endpoint halt state */
+	void (*p_set_halt)(TilemUSBDevice* dev, unsigned int ep, int halt);
+};
+
+/* USB controller */
+
+#define TILEM_USB_NUM_PIPES 16
+#define TILEM_USB_MAX_PACKET 1024
+#define TILEM_USB_MEM_SIZE (TILEM_USB_NUM_PIPES * 2 * TILEM_USB_MAX_PACKET)
+
+typedef struct _TilemUSBPipe {
+	dword timestamp;	/* Timestamp for packet contents */
+	word maxsize;		/* Maximum packet size
+				   (port 90 / 93) */
+	word count;		/* Amount of data buffered
+				   (ports 96-97 for read pipes) */
+	word readpos;		/* Current read position in data
+				   buffer */
+	byte state;		/* I/O state
+				   (port 91 / 94) */
+	byte mode;		/* Mode + endpoint number
+				   (port 98 / 9A) */
+	byte interval;		/* Polling interval
+				   (port 99 / 9B) */
+	byte parity;		/* Parity for next packet */
+} TilemUSBPipe;
+
+typedef struct _TilemUSBCtl {
+	unsigned int state;	/* Calculator state */
+
+	byte linestatus;	/* Line status (port 4D) */
+	byte lineevents;	/* Line events (port 56) */
+	byte lineeventmask;	/* Line event mask (port 57) */
+
+	byte lcdmirror;		/* LCD mirror mode (port 5A) */
+
+	byte protocolint;	/* Interrupt on protocol events
+				   (port 5B) */
+
+	byte address;		/* Device address (port 80) */
+
+	word wevents;		/* Write pipe events (ports 82-83) */
+	word revents;		/* Read pipe events (ports 84-85) */
+	byte bevents;		/* Misc. protocol events (port 86) */
+	word weventmask;	/* Write pipe mask (ports 87-88) */
+	word reventmask;	/* Read pipe mask (ports 89-8A) */
+	byte beventmask;	/* Protocol event mask (port 8B) */
+
+	word counter;		/* Frame counter (ports 8C-8D) */
+
+	/* Pipe status */
+	TilemUSBPipe wpipes[TILEM_USB_NUM_PIPES];
+	TilemUSBPipe rpipes[TILEM_USB_NUM_PIPES];
+
+	byte curpipe;		/* Selected pipe (port 8E) */
+
+	byte port4c, port54, port8f;
+
+	TilemUSBDevice* extdev;
+} TilemUSBCtl;
+
+/* Reset USB controller. */
+void tilem_usbctl_reset(TilemCalc* calc);
+
+/* Attach USB device. */
+int tilem_usbctl_attach(TilemCalc* calc, TilemUSBDevice* dev);
+
+/* Detach USB device. */
+void tilem_usbctl_detach(TilemCalc* calc);
+
+/* Set line event mask (port 57) */
+void tilem_usbctl_set_line_event_mask(TilemCalc* calc, byte mask);
+
+/* Set LCD mirroring mode (port 5A) */
+void tilem_usbctl_set_lcd_mirror(TilemCalc* calc, byte enable);
+
+/* Send an LCD command (port 10) */
+void tilem_usbctl_lcd_control(TilemCalc* calc, byte cmd);
+
+/* Send an LCD data byte (port 11) */
+void tilem_usbctl_lcd_write(TilemCalc* calc, byte value);
+
+/* Set USB address (port 80) */
+void tilem_usbctl_set_address(TilemCalc* calc, byte addr);
+
+/* Check/flush write events (ports 82-83) */
+byte tilem_usbctl_get_w_events(TilemCalc* calc, int shift);
+
+/* Check/flush read events (ports 84-85) */
+byte tilem_usbctl_get_r_events(TilemCalc* calc, int shift);
+
+/* Check/flush protocol events (port 86) */
+byte tilem_usbctl_get_b_events(TilemCalc* calc);
+
+/* Set write event mask (ports 87-88) */
+void tilem_usbctl_set_w_event_mask(TilemCalc* calc, word mask);
+
+/* Set read event mask (ports 89-8A) */
+void tilem_usbctl_set_r_event_mask(TilemCalc* calc, word mask);
+
+/* Set protocol event mask (port 8B) */
+void tilem_usbctl_set_b_event_mask(TilemCalc* calc, byte mask);
+
+/* Set current pipe number (port 8E) */
+void tilem_usbctl_select_pipe(TilemCalc* calc, int pipenum);
+
+/* Set maximum write packet size (port 90) */
+void tilem_usbctl_set_w_max_size(TilemCalc* calc, word size);
+
+/* Get I/O state for write pipe (port 91) */
+byte tilem_usbctl_get_w_state(TilemCalc* calc);
+
+/* Set I/O state for write pipe (port 91) */
+void tilem_usbctl_set_w_state(TilemCalc* calc, byte state);
+
+/* Set maximum read packet size (port 93) */
+void tilem_usbctl_set_r_max_size(TilemCalc* calc, word size);
+
+/* Get I/O state for read pipe (port 94) */
+byte tilem_usbctl_get_r_state(TilemCalc* calc);
+
+/* Set I/O state for read pipe (port 94) */
+void tilem_usbctl_set_r_state(TilemCalc* calc, byte state);
+
+/* Set mode and port mapping for write pipe (port 98) */
+void tilem_usbctl_set_w_mode(TilemCalc* calc, byte mode);
+
+/* Set poll interval for write pipe (port 99) */
+void tilem_usbctl_set_w_interval(TilemCalc* calc, byte interval);
+
+/* Set mode and port mapping for read pipe (port 9A) */
+void tilem_usbctl_set_r_mode(TilemCalc* calc, byte mode);
+
+/* Set poll interval for read pipe (port 9B) */
+void tilem_usbctl_set_r_interval(TilemCalc* calc, byte interval);
+
+/* Read data from pipe (port Ax) */
+byte tilem_usbctl_read_pipe(TilemCalc* calc, int pipenum);
+
+/* Write data to pipe (port Ax) */
+void tilem_usbctl_write_pipe(TilemCalc* calc, int pipenum, byte value);
+
+/* Set various USB mode/status flags (these ports are not fully
+   understood and the API may change in the future!) */
+void tilem_usbctl_set_port4c(TilemCalc* calc, byte value);
+void tilem_usbctl_set_port54(TilemCalc* calc, byte value);
+void tilem_usbctl_set_port81(TilemCalc* calc, byte value);
+void tilem_usbctl_set_port8f(TilemCalc* calc, byte value);
+
+/* Get various USB mode/status flags */
+byte tilem_usbctl_get_port4c(TilemCalc* calc);
+byte tilem_usbctl_get_port54(TilemCalc* calc);
+byte tilem_usbctl_get_port81(TilemCalc* calc);
+byte tilem_usbctl_get_port8f(TilemCalc* calc);
+
+/* Callback for TILEM_TIMER_USB_FRAME */
+void tilem_usb_frame_timer(TilemCalc* calc, void* data);
+
+
+/* Interface for external host device (calc as peripheral) */
+
+/* Received setup packet. */
+int tilem_usbctl_p_recv_setup(TilemCalc* calc, byte addr, byte ep,
+                              int length, const byte* data, int parity);
+
+/* Received data packet. */
+int tilem_usbctl_p_recv_out(TilemCalc* calc, byte addr, byte ep,
+                            int length, const byte* data, int parity);
+
+/* Received input request; retrieve and flush queued data. */
+int tilem_usbctl_p_get_in(TilemCalc* calc, byte addr, byte ep,
+                          int bufsize, byte* buffer, int parity);
+
+
 /* Calculators */
 
 /* Model IDs */
@@ -764,6 +1038,7 @@ struct _TilemCalc {
 	byte* mem;
 	byte* ram;
 	byte* lcdmem;
+	byte* usbmem;
 	byte mempagemap[4];
 
 	TilemLCD lcd;
@@ -772,6 +1047,7 @@ struct _TilemCalc {
 	TilemFlash flash;
 	TilemMD5Assist md5assist;
 	TilemUserTimer usertimers[TILEM_MAX_USER_TIMERS];
+	TilemUSBCtl usbctl;
 
 	byte poweronhalt;	/* System power control.  If this is
 				   zero, turn off LCD, timers,

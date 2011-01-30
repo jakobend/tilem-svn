@@ -1,7 +1,7 @@
 /*
  * libtilemcore - Graphing calculator emulation library
  *
- * Copyright (C) 2009, 2010 Benjamin Moody
+ * Copyright (C) 2009-2011 Benjamin Moody
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public License
@@ -56,8 +56,12 @@ static const char* get_timer_name(TilemCalc* calc, int id)
 		return "user2";
 	else if (id == TILEM_TIMER_USER3)
 		return "user3";
-	else if (id <= TILEM_NUM_SYS_TIMERS)
+	else if (id == TILEM_TIMER_USB_FRAME)
+		return "usbframe";
+	else if (id <= TILEM_NUM_SYS_TIMERS) {
+		tilem_internal(calc, "unknown timer %d", id);
 		abort();
+	}
 
 	id -= TILEM_NUM_SYS_TIMERS + 1;
 	if (id < calc->hw.nhwtimers)
@@ -544,6 +548,8 @@ static int load_new_sav_file(TilemCalc* calc, FILE* savfile)
 		else if (!strcmp(buf, "flash.toggles"))
 			calc->flash.toggles = value;
 
+		/* FIXME: parse USB controller state and data buffers */
+
 		else
 			set_hw_reg(calc, buf, value);
 	}
@@ -744,6 +750,8 @@ int tilem_calc_save_state(TilemCalc* calc, FILE* romfile, FILE* savfile)
 			fprintf(savfile, "usertimer%d.status = %X\n",
 				j, calc->usertimers[j].status);
 		}
+
+		/* FIXME: save USB controller state and data buffers */
 
 		fprintf(savfile, "\n## Model-specific ##\n");
 		for (j = 0; j < calc->hw.nhwregs; j++) {
